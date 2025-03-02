@@ -1,7 +1,16 @@
 #include "functions.h"
 #include <sys/types.h>
+
+#ifdef _WIN32
+#include <winsock2.h>
+#include <windows.h>
+#include <ws2tcpip.h>
+#include <afunix.h>
+#else
 #include <sys/socket.h>
 #include <sys/un.h>
+#endif
+
 #include <unistd.h>
 #include <string.h>
 #include <stdlib.h>
@@ -21,6 +30,23 @@ NAN_MODULE_INIT(SynchronousSocket::Init) {
 
     constructor.Reset(Nan::GetFunction(tpl).ToLocalChecked());
     Nan::Set(target, Nan::New("SynchronousSocket").ToLocalChecked(), Nan::GetFunction(tpl).ToLocalChecked());
+
+	// On Windows, winsock2 needs to be initialized before use:
+	#ifdef _WIN32
+	int rc = 0;
+	WSADATA wsaData = {0};
+	
+	rc = WSAStartup(MAKEWORD(2, 2), &wsaData)
+	if (rc != 0) {
+		// fprintf(stderr, "WSAStartup() error: %d\n", rc);
+		Nan::ThrowError("WSAStartup() error.")
+	}
+	
+	//todo We also need to call WSACleanup when the program ends somehow. Could
+	// possibly be done via addenvironmentcleanuphook but I think that requires
+	// making this addon context-aware. It's also possible simply not calling
+	// the cleanup function is acceptable.
+	#endif
 }
 
 SynchronousSocket::SynchronousSocket(std::string socketPath) : socketPath_(socketPath) { }
@@ -36,22 +62,44 @@ NAN_METHOD(SynchronousSocket::New) {
 
 NAN_METHOD(SynchronousSocket::Connect) {
     SynchronousSocket* obj = Nan::ObjectWrap::Unwrap<SynchronousSocket>(info.This());
-    obj->socketfd_ = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (obj->socketfd_ == -1) {
+	obj->socketfd_ = socket(AF_UNIX, SOCK_STREAM, 0);
+	#ifdef _WIN32
+	// not sure if this separate error handling is necessary, but doing it anyway.
+	if (obj->socketfd_ == INVALID_SOCKET) {
+		//ThrowError doesn't accept format strings probably. The
+		//better solution here is to get the error with
+		//WSAGetLastError() and then format-print this error
+		//description.
+		Nan::ThrowError("Unable to open socket file descriptor.");
+    }
+	#else
+	if (obj->socketfd_ == -1) {
         Nan::ThrowError("Unable to open socket file descriptor.");
     }
+	#endif
     struct sockaddr_un addr;
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, obj->socketPath_.c_str(), sizeof(addr.sun_path) - 1);
+	#ifdef _WIN32
+	if (connect(obj->socketfd_, (struct sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
+        close(obj->socketfd_);
+        Nan::ThrowError("Unable to connect to socket.");
+    }
+	#else
     if (connect(obj->socketfd_, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
         close(obj->socketfd_);
         Nan::ThrowError("Unable to connect to socket.");
     }
+	#endif
 }
 
 NAN_METHOD(SynchronousSocket::Disconnect) {
     SynchronousSocket* obj = Nan::ObjectWrap::Unwrap<SynchronousSocket>(info.This());
+	#ifdef _WIN32
+	closesocket(obj->socketfd_);
+	#else
     close(obj->socketfd_);
+	#endif
 }
 
 NAN_METHOD(SynchronousSocket::Read) {
@@ -91,7 +139,11 @@ NAN_METHOD(SynchronousSocket::Write) {
     const char* data = *socketDataArg;
     ssize_t size = strlen(data);
     if (write(obj->socketfd_, data, size) != size) {
+		#ifdef _WIN32
+		closesocket(obj->socketfd_);
+		#else
         close(obj->socketfd_);
+		#endif
         Nan::ThrowError("Unable to write to socket.");
     }
 }
