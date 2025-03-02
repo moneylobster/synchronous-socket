@@ -38,7 +38,7 @@ NAN_MODULE_INIT(SynchronousSocket::Init) {
 	
 	rc = WSAStartup(MAKEWORD(2, 2), &wsaData)
 	if (rc != 0) {
-		// fprintf(stderr, "WSAStartup() error: %d\n", rc);
+		// Might add the value of rc in the error message here.
 		Nan::ThrowError("WSAStartup() error.")
 	}
 	
